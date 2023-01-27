@@ -53,6 +53,7 @@ import alluxio.master.file.contexts.CreateDirectoryContext;
 import alluxio.master.file.contexts.CreateFileContext;
 import alluxio.master.file.contexts.DeleteContext;
 import alluxio.master.file.contexts.FreeContext;
+import alluxio.master.file.contexts.GetStatusContext;
 import alluxio.master.file.contexts.ListStatusContext;
 import alluxio.master.file.contexts.RenameContext;
 import alluxio.master.file.contexts.SetAttributeContext;
@@ -187,7 +188,7 @@ public class FileSystemMasterIntegrationTest extends BaseIntegrationTest {
     assertFalse(fileInfo.isPersisted());
     assertFalse(fileInfo.isPinned());
     Assert.assertEquals(Constants.NO_TTL, fileInfo.getTtl());
-    Assert.assertEquals(TtlAction.DELETE, fileInfo.getTtlAction());
+    Assert.assertEquals(TtlAction.FREE, fileInfo.getTtlAction());
     Assert.assertEquals(TEST_USER, fileInfo.getOwner());
     Assert.assertEquals(0644, (short) fileInfo.getMode());
   }
@@ -658,7 +659,8 @@ public class FileSystemMasterIntegrationTest extends BaseIntegrationTest {
     mFsMaster.createDirectory(new AlluxioURI("/testFolder"), CreateDirectoryContext.defaults());
     long ttl = 1;
     CreateFileContext context = CreateFileContext.mergeFrom(CreateFilePOptions.newBuilder()
-        .setCommonOptions(FileSystemMasterCommonPOptions.newBuilder().setTtl(ttl)));
+        .setCommonOptions(FileSystemMasterCommonPOptions.newBuilder().setTtl(ttl)))
+        .setWriteType(WriteType.CACHE_THROUGH);;
     long fileId =
         mFsMaster.createFile(new AlluxioURI("/testFolder/testFile1"), context).getFileId();
     FileInfo folderInfo =
@@ -666,9 +668,14 @@ public class FileSystemMasterIntegrationTest extends BaseIntegrationTest {
     Assert.assertEquals(fileId, folderInfo.getFileId());
     Assert.assertEquals(ttl, folderInfo.getTtl());
     // Sleep for the ttl expiration.
-    CommonUtils.sleepMs(2 * TTL_CHECKER_INTERVAL_MS);
-    HeartbeatScheduler.execute(HeartbeatContext.MASTER_TTL_CHECK);
-    mThrown.expect(FileDoesNotExistException.class);
+    CommonUtils.sleepMs(20 * TTL_CHECKER_INTERVAL_MS);
+    HeartbeatScheduler.await(HeartbeatContext.MASTER_TTL_CHECK, 10, TimeUnit.SECONDS);
+    HeartbeatScheduler.schedule(HeartbeatContext.MASTER_TTL_CHECK);
+    HeartbeatScheduler.await(HeartbeatContext.MASTER_TTL_CHECK, 10, TimeUnit.SECONDS);
+    // Check the cache is freed after TTL.
+    Assert.assertEquals(Constants.NO_TTL, mFsMaster.getFileInfo(fileId).getTtl());
+    Assert.assertEquals(TtlAction.DELETE, mFsMaster.getFileInfo(fileId).getTtlAction());
+    Assert.assertEquals(0, mFsMaster.getFileInfo(fileId).getInMemoryPercentage());
     mFsMaster.getFileInfo(fileId);
   }
 
